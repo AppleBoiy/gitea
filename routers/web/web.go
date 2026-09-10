@@ -1074,6 +1074,10 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
 		m.Get("/migrate", repo.Migrate)
 		m.Post("/migrate", web.Bind(forms.MigrateRepoForm{}), repo.MigratePost)
 		m.Get("/search", repo.SearchRepo)
+		// cgit addition: native gist creation, no upstream equivalent — see
+		// routers/web/repo/gist.go.
+		m.Get("/gist/new", repo.GistNew)
+		m.Post("/gist/new", web.Bind(forms.NewGistForm{}), repo.GistNewPost)
 	}, reqSignIn)
 	// end "/repo": create, migrate, search
 
