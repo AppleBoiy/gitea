@@ -276,6 +276,40 @@ func prepareUserProfileTabData(ctx *context.Context, profileDbRepo *repo_model.R
 		}
 		ctx.Data["Cards"] = orgs
 		total = count
+	case "gists":
+		// cgit addition: gists are mirrored in by migrate_gists.sh as repos named
+		// "gist-<id>" (see that script's comment for why the id, not the
+		// description, is what's stable) — this tab is just the repositories
+		// tab's query with the name filter flipped, same as GitHub separating
+		// Repositories from Gists on a profile.
+		ctx.Data["PageIsProfileGistList"] = true
+		repos, count, err = repo_model.SearchRepository(ctx, repo_model.SearchRepoOptions{
+			ListOptions: db.ListOptions{
+				PageSize: pagingNum,
+				Page:     page,
+			},
+			Actor:              ctx.Doer,
+			Keyword:            keyword,
+			OwnerID:            ctx.ContextUser.ID,
+			OrderBy:            orderBy,
+			Private:            ctx.IsSigned,
+			Collaborate:        optional.Some(false),
+			TopicOnly:          topicOnly,
+			Language:           language,
+			IncludeDescription: setting.UI.SearchRepoDescription,
+			Archived:           archived,
+			Fork:               fork,
+			Mirror:             mirror,
+			Template:           template,
+			IsPrivate:          private,
+			NamePrefix:         "gist-",
+		})
+		if err != nil {
+			ctx.ServerError("SearchRepository", err)
+			return
+		}
+
+		total = count
 	default: // default to "repositories"
 		repos, count, err = repo_model.SearchRepository(ctx, repo_model.SearchRepoOptions{
 			ListOptions: db.ListOptions{
@@ -296,6 +330,8 @@ func prepareUserProfileTabData(ctx *context.Context, profileDbRepo *repo_model.R
 			Mirror:             mirror,
 			Template:           template,
 			IsPrivate:          private,
+			// cgit addition: gists get their own tab above, so they're excluded here.
+			ExcludeNamePrefix: "gist-",
 		})
 		if err != nil {
 			ctx.ServerError("SearchRepository", err)

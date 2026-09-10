@@ -170,11 +170,28 @@ func loadHeaderCount(ctx *context.Context) error {
 		Private:            ctx.IsSigned,
 		Collaborate:        optional.Some(false),
 		IncludeDescription: setting.UI.SearchRepoDescription,
+		// cgit addition: gists get their own tab (see profile.go) and their own
+		// count below, so keep them out of the main Repositories count.
+		ExcludeNamePrefix: "gist-",
 	})
 	if err != nil {
 		return err
 	}
 	ctx.Data["RepoCount"] = repoCount
+
+	// cgit addition: count for the Gists tab badge, mirroring RepoCount above.
+	gistCount, err := repo_model.CountRepository(ctx, repo_model.SearchRepoOptions{
+		Actor:              ctx.Doer,
+		OwnerID:            ctx.ContextUser.ID,
+		Private:            ctx.IsSigned,
+		Collaborate:        optional.Some(false),
+		IncludeDescription: setting.UI.SearchRepoDescription,
+		NamePrefix:         "gist-",
+	})
+	if err != nil {
+		return err
+	}
+	ctx.Data["GistCount"] = gistCount
 
 	var projectType project_model.Type
 	if ctx.ContextUser.IsOrganization() {

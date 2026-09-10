@@ -612,6 +612,7 @@
   "user.change_avatar": "Change your avatar…",
   "user.joined_on": "Joined on %s",
   "user.repositories": "Repositories",
+  "user.gists": "Gists",
   "user.activity": "Public Activity",
   "user.followers": "Followers",
   "user.show_more": "Show More",

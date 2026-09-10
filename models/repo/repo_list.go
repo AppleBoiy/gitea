@@ -210,6 +210,13 @@ type SearchRepoOptions struct {
 	// - Don't show forks, when opts.Fork is OptionalBoolNone.
 	// - Do not display repositories that don't have a description, an icon and topics.
 	OnlyShowRelevant bool
+	// NamePrefix restricts results to repos whose lower_name starts with this prefix
+	// (cgit addition: used to power the "Gists" profile tab — see profile.go).
+	NamePrefix string
+	// ExcludeNamePrefix is the inverse of NamePrefix: it excludes repos whose lower_name
+	// starts with this prefix (cgit addition: keeps gist mirrors out of the main
+	// Repositories tab and its count).
+	ExcludeNamePrefix string
 }
 
 func (opts *SearchRepoOptions) ApplyPublicOnly(publicOnly bool) {
@@ -495,6 +502,19 @@ func SearchRepositoryCondition(opts SearchRepoOptions) builder.Cond {
 			keywordCond = keywordCond.Or(likes)
 		}
 		cond = cond.And(keywordCond)
+	}
+
+	// cgit addition: NamePrefix / ExcludeNamePrefix power the Gists tab split.
+	// builder.Like wraps its value in "%...%" UNLESS the value itself already
+	// starts or ends with "%" (see xorm.io/builder's cond_like.go), so a
+	// trailing "%" here is what turns this into a prefix match instead of a
+	// substring match.
+	if opts.NamePrefix != "" {
+		cond = cond.And(builder.Like{"lower_name", strings.ToLower(opts.NamePrefix) + "%"})
+	}
+
+	if opts.ExcludeNamePrefix != "" {
+		cond = cond.And(builder.Not{builder.Like{"lower_name", strings.ToLower(opts.ExcludeNamePrefix) + "%"}})
 	}
 
 	if opts.Language != "" {
