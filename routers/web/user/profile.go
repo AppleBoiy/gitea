@@ -6,7 +6,9 @@ package user
 
 import (
 	"fmt"
+	"html/template"
 	"net/http"
+	"sort"
 	"strings"
 
 	activities_model "gitea.dev/models/activities"
@@ -16,11 +18,14 @@ import (
 	repo_model "gitea.dev/models/repo"
 	user_model "gitea.dev/models/user"
 	"gitea.dev/modules/git"
+	"gitea.dev/modules/gitrepo"
+	"gitea.dev/modules/highlight"
 	"gitea.dev/modules/log"
 	"gitea.dev/modules/markup/markdown"
 	"gitea.dev/modules/optional"
 	"gitea.dev/modules/setting"
 	"gitea.dev/modules/templates"
+	"gitea.dev/modules/typesniffer"
 	"gitea.dev/routers/web/feed"
 	"gitea.dev/routers/web/org"
 	shared_user "gitea.dev/routers/web/shared/user"
@@ -74,6 +79,122 @@ func userProfile(ctx *context.Context) {
 		return
 	}
 	ctx.HTML(http.StatusOK, tplProfile)
+}
+
+// cgit addition: powers the file-content preview shown on each card of the
+// profile "Gists" tab (see templates/shared/repo/gist_list.tmpl), so a gist
+// there looks like an actual gist — a snippet you can read at a glance — not
+// just a bare repo-list entry with a name and a star count.
+const (
+	// gistPreviewByteLimit caps how much of a gist's primary file is read
+	// off disk for the preview card — enough for a typical snippet without
+	// pulling a multi-MB file into a listing page that renders several of
+	// these per request.
+	gistPreviewByteLimit = 8 * 1024
+	// gistPreviewLineLimit caps how many lines the card actually displays,
+	// independent of the byte cap above: a file with very long lines could
+	// stay under gistPreviewByteLimit while still being unreadable as a
+	// preview.
+	gistPreviewLineLimit = 20
+)
+
+// GistPreview is the per-repo data the Gists tab template renders inside
+// each card. IsEmpty/IsBinary short-circuit to a plain notice instead of a
+// broken or garbled code block.
+type GistPreview struct {
+	FileName  string
+	FileCount int
+	Content   template.HTML
+	Truncated bool
+	IsEmpty   bool
+	IsBinary  bool
+}
+
+// buildGistPreviews renders one GistPreview per repo, keyed by repo ID
+// (matching how the template looks them up via `index $.GistPreviews .ID`).
+// Best-effort per repo: a repo that fails to open or read just gets
+// IsEmpty=true rather than failing the whole profile page.
+func buildGistPreviews(ctx *context.Context, repos []*repo_model.Repository) map[int64]*GistPreview {
+	previews := make(map[int64]*GistPreview, len(repos))
+	for _, repo := range repos {
+		previews[repo.ID] = buildGistPreview(ctx, repo)
+	}
+	return previews
+}
+
+func buildGistPreview(ctx *context.Context, repo *repo_model.Repository) *GistPreview {
+	preview := &GistPreview{}
+
+	gitRepo, err := gitrepo.OpenRepository(ctx, repo)
+	if err != nil {
+		log.Error("buildGistPreview: OpenRepository %s: %v", repo.FullName(), err)
+		preview.IsEmpty = true
+		return preview
+	}
+	defer gitRepo.Close()
+
+	// A freshly-migrated mirror that hasn't finished its first sync yet has
+	// no commits on its default branch — treat that the same as an empty
+	// gist rather than erroring the whole page.
+	commit, err := gitRepo.GetBranchCommit(repo.DefaultBranch)
+	if err != nil {
+		preview.IsEmpty = true
+		return preview
+	}
+
+	entries, err := commit.ListEntries()
+	if err != nil {
+		log.Error("buildGistPreview: ListEntries %s: %v", repo.FullName(), err)
+		preview.IsEmpty = true
+		return preview
+	}
+
+	files := make(git.Entries, 0, len(entries))
+	for _, e := range entries {
+		if e.IsRegular() || e.IsExecutable() {
+			files = append(files, e)
+		}
+	}
+	if len(files) == 0 {
+		preview.IsEmpty = true
+		return preview
+	}
+	// Deterministic pick of the "primary" file: a real gist is usually a
+	// single file, but nothing stops it from having more — same as GitHub,
+	// which shows one file per gist page and links to the rest.
+	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
+	primary := files[0]
+
+	preview.FileName = primary.Name()
+	preview.FileCount = len(files)
+
+	raw, err := primary.Blob().GetBlobBytes(gistPreviewByteLimit)
+	if err != nil {
+		log.Error("buildGistPreview: GetBlobBytes %s/%s: %v", repo.FullName(), primary.Name(), err)
+		preview.IsEmpty = true
+		return preview
+	}
+	if len(raw) == 0 {
+		preview.IsEmpty = true
+		return preview
+	}
+	if !typesniffer.DetectContentType(raw).IsRepresentableAsText() {
+		preview.IsBinary = true
+		return preview
+	}
+
+	text := string(raw)
+	lines := strings.Split(text, "\n")
+	if len(lines) > gistPreviewLineLimit {
+		text = strings.Join(lines[:gistPreviewLineLimit], "\n")
+		preview.Truncated = true
+	}
+	if primary.Size() > gistPreviewByteLimit {
+		preview.Truncated = true
+	}
+
+	preview.Content, _, _ = highlight.RenderCodeSlowGuess(primary.Name(), "", text)
+	return preview
 }
 
 func prepareUserProfileTabData(ctx *context.Context, profileDbRepo *repo_model.Repository, profileReadme *git.Blob) {
@@ -342,6 +463,13 @@ func prepareUserProfileTabData(ctx *context.Context, profileDbRepo *repo_model.R
 	}
 	ctx.Data["Repos"] = repos
 	ctx.Data["Total"] = total
+
+	// cgit addition: file-content previews for the Gists tab cards, built
+	// only when that tab is actually being rendered — every other tab
+	// leaves GistPreviews unset and its template branch never looks it up.
+	if tab == "gists" {
+		ctx.Data["GistPreviews"] = buildGistPreviews(ctx, repos)
+	}
 
 	if _, err := shared_user.RenderUserOrgHeader(ctx); err != nil {
 		ctx.ServerError("RenderUserOrgHeader", err)
